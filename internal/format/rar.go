@@ -50,6 +50,9 @@ func (Rar) Magic() []core.Magic {
 	}
 }
 
+// IsStream 返回 false：RAR 是归档类格式，内部有条目清单。
+func (Rar) IsStream() bool { return false }
+
 // Scan 预扫描 RAR 的条目清单。
 //
 // rardecode.List 只解析文件头，不解压任何内容。
@@ -96,7 +99,7 @@ func (r Rar) Extract(ctx context.Context, req *core.ExtractRequest) (*core.Extra
 		})
 	}
 
-	l := planLayout(req.SrcPath, req.DstDir, meta)
+	l := planLayout(req.SrcPath, req.DstDir, meta, req.Options.ForceArchiveDir)
 	l.root = resolveLayoutRoot(l, req.Options.Overwrite)
 	if l.root == "" {
 		// 空归档，不产出。

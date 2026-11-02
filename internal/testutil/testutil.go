@@ -9,6 +9,7 @@ package testutil
 
 import (
 	"archive/zip"
+	"compress/gzip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,30 @@ func BuildZipFromFiles(t *testing.T, path string, entries map[string]string) {
 	cmd.Dir = build
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("构造 ZIP 失败：%v\n%s", err, out)
+	}
+}
+
+// BuildGzip 在 path 处构造一个 GZIP 文件，内容为 content。
+//
+// 用 Go 原生 gzip 库构造，不依赖外部命令。
+func BuildGzip(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	zw := gzip.NewWriter(f)
+	if _, err := zw.Write([]byte(content)); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("关闭 GZIP 失败：%v", err)
 	}
 }
 

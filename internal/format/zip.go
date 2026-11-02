@@ -36,6 +36,9 @@ func (Zip) Magic() []core.Magic {
 	}
 }
 
+// IsStream 返回 false：ZIP 是归档类格式，内部有条目清单。
+func (Zip) IsStream() bool { return false }
+
 // Scan 预扫描 ZIP 的条目清单。
 //
 // 只读中央目录，不解压任何内容。
@@ -84,7 +87,7 @@ func (z Zip) Extract(ctx context.Context, req *core.ExtractRequest) (*core.Extra
 		})
 	}
 
-	l := planLayout(req.SrcPath, req.DstDir, metaOf(entries))
+	l := planLayout(req.SrcPath, req.DstDir, metaOf(entries), req.Options.ForceArchiveDir)
 	l.root = resolveLayoutRoot(l, req.Options.Overwrite)
 
 	outPaths, written, err := extractArchive(ctx, l, entries, req.Options.Overwrite)

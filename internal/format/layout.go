@@ -20,6 +20,20 @@ import (
 //   - 顶层多个条目 → 建以归档名命名的子目录
 //
 // 这些规则是各归档格式共用的，因此放在公共层。
+//
+// 例外一：归档类格式（zip/tar/7z/rar）在"顶层解压链"上会启用
+// "强制目录"模式（forceDir），一律建以归档名命名的目录，不再按
+// 条目数区分平铺与否。
+//
+// 顶层解压链指从用户直接指定的输入出发、经由单流格式层层解开得到的
+// 那条链（如 log.tar.gz → log.tar → 内容）。日志包的名字往往只写在
+// 最外层的文件名上，链上的每一层各按自己的文件名去掉最后一个扩展名，
+// 中间的压缩后缀不会残留到最终的目录名上（log.tar.gz → log/）。
+//
+// 归档内部嵌套的子压缩包不在链上，仍按"顶层条目数"决定布局。
+//
+// 例外二：单流格式（gzip/bzip2/xz/zstd）恒为平铺——它内部没有条目概念，
+// 解压后只有一个文件，任何时候都不额外建目录。
 
 // archiveEntry 是归档中一个待写出的条目，附带打开内容的方式。
 type archiveEntry struct {
@@ -54,12 +68,22 @@ type layout struct {
 //
 // 目录名取归档文件名去掉最后一个扩展名；若归档没有扩展名，
 // 则用 "文件名.d"。
-func planLayout(srcPath, dstDir string, entries []core.Entry) layout {
+//
+// forceDir 为真时忽略条目数规则，一律建以归档名命名的目录。
+// 该模式用于顶层解压链上的归档类格式：日志包的文件名里往往带着
+// 机器名与时间戳，固定成目录可以把这些信息保留下来，
+// 同时避免多个日志包的内容混在同一个目录里。
+func planLayout(srcPath, dstDir string, entries []core.Entry, forceDir bool) layout {
 	topLevel := countTopLevel(entries)
 
 	if topLevel == 0 {
 		// 空归档：不产出。
 		return layout{kind: layoutFlat, root: ""}
+	}
+
+	// 强制目录：忽略条目数，一律建以归档名命名的目录。
+	if forceDir {
+		return layout{kind: layoutDirectory, root: archiveDirPath(srcPath, dstDir)}
 	}
 
 	if topLevel == 1 {
@@ -68,14 +92,17 @@ func planLayout(srcPath, dstDir string, entries []core.Entry) layout {
 	}
 
 	// 多条目：建以归档名命名的目录。
-	return layout{kind: layoutDirectory, root: filepath.Join(dstDir, archiveDirName(srcPath))}
+	return layout{kind: layoutDirectory, root: archiveDirPath(srcPath, dstDir)}
 }
 
 // archiveDirName 生成归档对应的输出目录名。
 //
 //   - "a.zip"      → "a"
-//   - "a.tar.gz"   → "a.tar"（只去最后一个扩展名）
+//   - "a.tar"      → "a"（只去最后一个扩展名）
 //   - "data"       → "data.d"（无扩展名时追加 .d）
+//
+// 顶层解压链上每一层各去一个扩展名，因此 log.tar.gz 会在 gzip 层
+// 变成 log.tar、在 tar 层变成 log，不会残留中间的压缩后缀。
 func archiveDirName(srcPath string) string {
 	base := filepath.Base(srcPath)
 
@@ -94,17 +121,51 @@ func archiveDirName(srcPath string) string {
 	return name
 }
 
+// archiveDirPath 返回归档对应的输出目录路径（未处理同名冲突）。
+//
+// 目录名由 archiveDirName 决定，去掉最后一个扩展名；无扩展名时追加 ".d"。
+func archiveDirPath(srcPath, dstDir string) string {
+	return filepath.Join(dstDir, archiveDirName(srcPath))
+}
+
+// streamSuffix 描述单流格式的一个压缩后缀。
+type streamSuffix struct {
+	// Compressed 是压缩后缀（含点），如 ".gz"。
+	Compressed string
+
+	// Inner 是解压后内容应保留的后缀（含点）。
+	//
+	// 单流格式解压后得到的其实是"内层文件"，后缀决定它是什么：
+	// ".gz" 解出的是普通文件（无后缀），".tgz" 解出的则是 tar 包。
+	// 复合后缀（.tgz/.tbz2/.txz/.tzst）据此还原成内层后缀，
+	// 让后续的归档层能正确识别它，也让输出目录名保持干净。
+	Inner string
+}
+
 // planStreamEntry 为单流格式构造合成的条目清单。
 //
 // 单流格式（gzip/bzip2/xz/zstd）内部没有条目概念，解压后恒产出一个
 // 文件，因此这里合成单个条目供布局决策与命名使用。
 //
-// 输出文件名取原文件名去掉压缩后缀；若原名没有对应后缀，
-// 则追加 ".d"（与原版 Java 工具行为一致）。
-func planStreamEntry(path, suffix string) ([]core.Entry, error) {
+// 输出文件名取原文件名去掉压缩后缀，并还原内层后缀：
+//
+//   - "main_log.zst"    → "main_log"
+//   - "log.tar.gz"      → "log.tar"
+//   - "log.tgz"         → "log.tar"
+//   - "data"            → "data.d"（无对应后缀时追加 .d）
+func planStreamEntry(path string, suffixes []streamSuffix) ([]core.Entry, error) {
 	base := filepath.Base(path)
-	outName := strings.TrimSuffix(base, suffix)
-	if outName == base || outName == "" {
+
+	outName := ""
+	for _, s := range suffixes {
+		if !strings.HasSuffix(base, s.Compressed) {
+			continue
+		}
+		outName = strings.TrimSuffix(base, s.Compressed) + s.Inner
+		break
+	}
+
+	if outName == "" {
 		outName = base + ".d"
 	}
 

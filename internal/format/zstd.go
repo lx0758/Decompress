@@ -33,14 +33,27 @@ func (Zstd) Magic() []core.Magic {
 	}
 }
 
+// IsStream 返回 true：ZSTD 是单流格式，内部没有条目清单，解压后恒产出一个文件。
+func (Zstd) IsStream() bool { return true }
+
+// suffixes 返回 ZSTD 支持的压缩后缀。
+//
+// ".tzst" 是 tar.zst 的简写，内层是 tar 包，解压后要还原 ".tar"。
+func (Zstd) suffixes() []streamSuffix {
+	return []streamSuffix{
+		{Compressed: ".zst", Inner: ""},
+		{Compressed: ".tzst", Inner: ".tar"},
+	}
+}
+
 // Scan 返回合成的单条目。
 func (z Zstd) Scan(path string) ([]core.Entry, error) {
-	return planStreamEntry(path, ".zst")
+	return planStreamEntry(path, z.suffixes())
 }
 
 // Extract 解压 Zstandard 流。
 func (z Zstd) Extract(ctx context.Context, req *core.ExtractRequest) (*core.ExtractResult, error) {
-	return extractStream(ctx, req, ".zst", func(r io.Reader) (io.ReadCloser, error) {
+	return extractStream(ctx, req, z.suffixes(), func(r io.Reader) (io.ReadCloser, error) {
 		d, err := zstd.NewReader(r)
 		if err != nil {
 			return nil, err

@@ -133,10 +133,14 @@ func extractArchive(ctx context.Context, l layout, entries []archiveEntry, overw
 
 // extractStream 是单流格式（gzip/bzip2/xz/zstd）的通用解压流程。
 //
-// 单流格式没有条目概念，解压后恒产出一个文件。suffix 是该格式的
-// 压缩后缀，用于推导输出文件名；open 负责把原始文件包装成解压 reader。
-func extractStream(ctx context.Context, req *core.ExtractRequest, suffix string, open func(io.Reader) (io.ReadCloser, error)) (*core.ExtractResult, error) {
-	entries, err := planStreamEntry(req.SrcPath, suffix)
+// 单流格式没有条目概念，解压后恒产出一个文件。suffixes 是该格式的
+// 压缩后缀列表，用于推导输出文件名；open 负责把原始文件包装成解压 reader。
+//
+// 单流格式恒为平铺：无论顶层输入还是嵌套子包，都直接输出单个文件，
+// 不建额外目录。顶层输入的输出文件名取原名去掉压缩后缀，
+// 如 main_log_2026_0327.zst → main_log_2026_0327。
+func extractStream(ctx context.Context, req *core.ExtractRequest, suffixes []streamSuffix, open func(io.Reader) (io.ReadCloser, error)) (*core.ExtractResult, error) {
+	entries, err := planStreamEntry(req.SrcPath, suffixes)
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,8 @@ type fakeCompression struct {
 	produced string
 	// scanEntries 是预扫描返回的条目。
 	scanEntries []Entry
+	// stream 表示该格式是单流格式（解压后恒产出一个文件）。
+	stream bool
 	// extractFunc 可选，自定义解压行为。
 	extractFunc func(ctx context.Context, req *ExtractRequest) (*ExtractResult, error)
 }
@@ -36,6 +38,9 @@ func (f *fakeCompression) Extensions() []string { return f.extensions }
 
 // Magic 返回魔数规则。
 func (f *fakeCompression) Magic() []Magic { return f.magic }
+
+// IsStream 返回是否为单流格式。
+func (f *fakeCompression) IsStream() bool { return f.stream }
 
 // Scan 返回预扫描的条目清单。
 func (f *fakeCompression) Scan(path string) ([]Entry, error) {

@@ -33,14 +33,28 @@ func (Bzip2) Magic() []core.Magic {
 	}
 }
 
+// IsStream 返回 true：BZIP2 是单流格式，内部没有条目清单，解压后恒产出一个文件。
+func (Bzip2) IsStream() bool { return true }
+
+// suffixes 返回 BZIP2 支持的压缩后缀。
+//
+// ".tbz2"/".tbz" 是 tar.bz2 的简写，内层是 tar 包，解压后要还原 ".tar"。
+func (Bzip2) suffixes() []streamSuffix {
+	return []streamSuffix{
+		{Compressed: ".bz2", Inner: ""},
+		{Compressed: ".tbz2", Inner: ".tar"},
+		{Compressed: ".tbz", Inner: ".tar"},
+	}
+}
+
 // Scan 返回合成的单条目。
 func (b Bzip2) Scan(path string) ([]core.Entry, error) {
-	return planStreamEntry(path, ".bz2")
+	return planStreamEntry(path, b.suffixes())
 }
 
 // Extract 解压 BZIP2 流。
 func (b Bzip2) Extract(ctx context.Context, req *core.ExtractRequest) (*core.ExtractResult, error) {
-	return extractStream(ctx, req, ".bz2", func(r io.Reader) (io.ReadCloser, error) {
+	return extractStream(ctx, req, b.suffixes(), func(r io.Reader) (io.ReadCloser, error) {
 		return io.NopCloser(bzip2.NewReader(r)), nil
 	})
 }

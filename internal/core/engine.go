@@ -58,6 +58,19 @@ type queueItem struct {
 
 	// derived 表示该路径来自解压产物，而非用户直接指定。
 	derived bool
+
+	// chain 表示该条目仍处在"用户输入的顶层解压链"中。
+	//
+	// 顶层解压链从用户直接指定的输入出发，只经过单流格式层层传递：
+	// log.tar.gz → gzip → log.tar → tar。
+	//
+	// 链上的归档层必须强制建以自己名字命名的目录，
+	// 否则 log.tar.gz 这类输入会丢掉文件名里的机器名与时间戳
+	// （单条目时平铺，多条目时目录名残留中间层后缀）。
+	//
+	// 链在遇到第一个归档层时终止：归档内部的内容属于新的嵌套层级，
+	// 按各自的嵌套规则布局。
+	chain bool
 }
 
 // Extract 执行一次解压任务。
@@ -71,14 +84,15 @@ func (e *Engine) Extract(ctx context.Context, paths []string, opts Options) (*Su
 	}
 
 	// 队列：先进先出。
-	// 每项记录该路径是否由解压衍生（而非用户直接指定）。
+	// 每项记录该路径是否由解压衍生（而非用户直接指定），
+	// 以及它是否仍处在用户输入的顶层解压链中。
 	queue := make([]queueItem, 0, 16)
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return nil, err
 		}
-		queue = append(queue, queueItem{path: abs})
+		queue = append(queue, queueItem{path: abs, chain: true})
 	}
 
 	dstRoot := opts.OutputDir
@@ -122,7 +136,7 @@ func (e *Engine) Extract(ctx context.Context, paths []string, opts Options) (*Su
 				continue
 			}
 			for _, f := range files {
-				queue = append(queue, queueItem{path: f, derived: item.derived})
+				queue = append(queue, queueItem{path: f, derived: item.derived, chain: item.chain})
 			}
 			continue
 		}
@@ -185,7 +199,20 @@ func (e *Engine) Extract(ctx context.Context, paths []string, opts Options) (*Su
 		})
 
 		// 执行解压。
-		result := e.extractOne(ctx, compression, current, dstDir, format, opts)
+		//
+		// 顶层解压链（用户直接指定的输入，经由单流格式层层解开）中的
+		// 归档类格式强制使用以归档名命名的输出目录，把文件名里的
+		// 机器名、时间戳等信息保留下来；链外的嵌套子压缩包维持智能布局。
+		//
+		// 链在遇到第一个归档类格式时终止：归档内部的内容属于新的
+		// 嵌套层级，按嵌套规则布局。
+		//
+		// 单流格式（gzip/bzip2/xz/zstd）恒为平铺，不建目录，
+		// 因此该标志对它没有影响。
+		callOpts := opts
+		callOpts.ForceArchiveDir = item.chain
+
+		result := e.extractOne(ctx, compression, current, dstDir, format, callOpts)
 
 		mu.Lock()
 		results = append(results, result)
@@ -197,8 +224,19 @@ func (e *Engine) Extract(ctx context.Context, paths []string, opts Options) (*Su
 
 		// 解压产物入队，继续处理（产物中可能还有压缩包）。
 		if result.Err == nil {
+			// 链的延续规则：
+			//
+			//   - 单流格式的产物是同一条链的下一环（.tar.gz → .tar → tar），
+			//     链标记继续传递
+			//   - 归档类格式的产物是归档内部的内容，属于新的嵌套层级，
+			//     链在此终止，按嵌套规则布局
+			childChain := false
+			if compression.IsStream() {
+				childChain = item.chain
+			}
+
 			for _, p := range result.OutputPaths {
-				queue = append(queue, queueItem{path: p, derived: true})
+				queue = append(queue, queueItem{path: p, derived: true, chain: childChain})
 			}
 			// 衍生出来的子压缩包解完后立即清理，避免产物里残留中间态压缩包。
 			//

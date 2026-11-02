@@ -32,6 +32,7 @@ type Magic struct {
 //   - Extensions 返回小写扩展名（含点），如 ".zip"
 //   - Magic 为空表示该格式不支持基于魔数的内容识别
 //   - Scan 与 Extract 都必须能在不解压内容的前提下快速返回条目清单
+//   - IsStream 必须准确反映该格式是单流还是归档类
 type Compression interface {
 	// Name 返回格式标识，全局唯一，全小写。
 	Name() string
@@ -44,6 +45,17 @@ type Compression interface {
 
 	// Magic 返回魔数识别规则，可返回多条（同格式可能有多种版本）。
 	Magic() []Magic
+
+	// IsStream 返回该格式是否为"单流格式"。
+	//
+	// 单流格式内部没有条目清单概念，解压后恒产出一个文件。
+	// 调度引擎据此区分两类产物：
+	//
+	//   - 单流格式的产物是"同一条解压链的下一环"（如 .tar.gz 解出 .tar）
+	//   - 归档类格式的产物是"新的一层嵌套"（如 .zip 解出内部的子包）
+	//
+	// 前者会延续顶层目录命名，后者则按嵌套规则布局。
+	IsStream() bool
 
 	// Scan 预扫描归档的条目清单，不解压任何内容。
 	//

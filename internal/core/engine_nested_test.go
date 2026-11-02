@@ -112,6 +112,9 @@ func TestNestedArchiveScenarios(t *testing.T) {
 // TestNestedOutputPreservesHierarchy 验证嵌套解压保持目录层级。
 //
 // 子归档解到它自己的父目录，内容不会脱离原有层级。
+//
+// 顶层 outer.zip 走新规则（一律建以归档名命名的目录），因此层级里
+// 多了 outer/ 这一层；子包 child.zip 维持旧规则，多条目时建同名目录。
 func TestNestedOutputPreservesHierarchy(t *testing.T) {
 	if !testutil.HaveTool("zip") {
 		t.Skip("缺少 zip，跳过")
@@ -123,7 +126,7 @@ func TestNestedOutputPreservesHierarchy(t *testing.T) {
 	child := filepath.Join(dir, "child.zip")
 	testutil.BuildZip(t, child, map[string]string{"a.txt": "a", "b.txt": "b"})
 
-	// 外层包：顶层只有 src/ 一个条目 → 平铺。
+	// 外层包：顶层只有 src/ 一个条目。
 	outer := filepath.Join(dir, "outer.zip")
 	testutil.BuildZipFromFiles(t, outer, map[string]string{"src/child.zip": child})
 
@@ -140,7 +143,7 @@ func TestNestedOutputPreservesHierarchy(t *testing.T) {
 	}
 
 	// 子包内容应留在 src/ 层级内，而不是散落到输出根目录。
-	for _, rel := range []string{"src/child/a.txt", "src/child/b.txt"} {
+	for _, rel := range []string{"outer/src/child/a.txt", "outer/src/child/b.txt"} {
 		full := filepath.Join(outDir, filepath.FromSlash(rel))
 		if _, err := os.Stat(full); err != nil {
 			t.Errorf("期望产物不存在：%s（实际产物 %v）", full, testutil.ListTree(t, outDir))

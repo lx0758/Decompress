@@ -33,6 +33,9 @@ func (Tar) Magic() []core.Magic {
 	}
 }
 
+// IsStream 返回 false：TAR 是归档类格式，内部有条目清单。
+func (Tar) IsStream() bool { return false }
+
 // Scan 预扫描 TAR 的条目清单。
 //
 // TAR 是顺序流格式，条目只能顺序读出。但 archive/tar 的 discard
@@ -51,7 +54,7 @@ func (t Tar) Extract(ctx context.Context, req *core.ExtractRequest) (*core.Extra
 		return nil, err
 	}
 
-	l := planLayout(req.SrcPath, req.DstDir, entries)
+	l := planLayout(req.SrcPath, req.DstDir, entries, req.Options.ForceArchiveDir)
 	l.root = resolveLayoutRoot(l, req.Options.Overwrite)
 	if l.root == "" {
 		// 空归档，不产出。
