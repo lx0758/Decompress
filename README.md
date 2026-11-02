@@ -21,6 +21,7 @@
 # 编译
 make build          # 产物在 bin/decompress
 make release        # 交叉编译各平台，产物在 dist/
+make winres         # 仅生成 Windows 版本资源（.syso）
 
 # 使用
 ./bin/decompress archive.zip
@@ -68,6 +69,9 @@ make release VERSION=1.2.3   # 手动指定，优先于 git tag
 
 版本号通过 ldflags 注入到 `internal/cli.Version`，注入路径必须与包的实际
 导入路径一致，写错会被静默忽略（`--version` 仍显示 `dev`）。
+
+同一个版本号也会写进 Windows 版本资源（`--version` 与文件属性里的
+`FileVersion` 一致），因此 `make release` 会先生成 `.syso` 再交叉编译。
 
 ### 持续集成
 
@@ -229,6 +233,61 @@ outer.zip ──解压──▶ outer/child.zip ──解压──▶ outer/data
 重定向到文件或管道时立即退出，不拖慢脚本。
 加 `-no-wait` 可显式跳过驻留。
 
+## Windows 杀毒软件误报
+
+Go 编译的 Windows 可执行文件被 Microsoft Defender 误报为病毒，是 Go 生态的
+[普遍现象](https://github.com/microsoft/go/issues/1255)（微软 Go 团队在 issue 中
+确认已知晓该问题）。本工具的产物曾被检出为 `Trojan:Win32/Sabsik.FL.A!ml`
+——`!ml` 表示该判定由机器学习模型给出，而非命中了病毒特征库。
+
+### 为什么会被误报
+
+Defender 对**未签名的新二进制**缺少信誉依据，只能退回到启发式判定。
+而 Go 二进制恰好具备若干容易触发启发式规则的固有特征：
+
+| 特征 | 说明 |
+|---|---|
+| `CreateProcessW` 等 API 名 | 来自 Go 标准库 `syscall` 包，任何 Go Windows 程序都有，最小的 hello-world 也一样 |
+| 无 Authenticode 签名 | 云端信誉无从查起，只能靠本地启发式打分 |
+| 无版本资源 | 文件属性里连产品名都没有，看起来像"随手打包的临时程序" |
+| 高熵的静态链接 | 依赖全部静态打进去，无动态库可佐证来源 |
+
+本工具已排除其它常见诱因：**未加壳**（无 UPX/VMProtect 等）、
+**业务代码不调用任何进程创建 API**（`os/exec` 只出现在测试辅助里，
+不链接进发布产物）、文件熵 6.4（属正常范围，加壳器通常 >7.2）。
+
+### 本项目已做的处置
+
+**补齐 Windows 版本资源**。`make release` 会先生成 `.syso`（PE 的 `.rsrc` 段），
+链入 Windows 产物：
+
+```bash
+make winres    # 单独生成
+make release   # 自动先生成再交叉编译
+```
+
+生成的产物在文件属性 → 详细信息里能看到产品名、公司名、版本号，
+不再是一个"匿名程序"，可有效降低启发式打分。
+
+`.syso` 文件名带 `_windows_<arch>` 后缀，Go 只会把它链进对应平台的构建，
+Linux / macOS 产物完全不受影响（回归测试 `format/winres_test.go` 守着这条）。
+
+### 仍然建议做的两件事
+
+版本资源只能降低误报概率，**不能根治**。彻底解决还需要：
+
+1. **提交误报样本**，让微软更新特征库：
+   <https://www.microsoft.com/wdsi/filesubmission>
+   提交 `decompress-<版本>-windows-amd64.exe`，并附上文件的 SHA256。
+   审核通过后该哈希会被加入白名单。
+
+2. **代码签名**（Authenticode）。签名后的二进制在信誉模型里权重最高，
+   也是微软官方给出的首要建议。目前本项目未接入签名流程——
+   若需要，可购买 OV 证书后在 CI 中用 `signtool` 签名。
+
+企业环境可临时让 IT 配置 Defender 排除项（按哈希或路径），
+让用户先能用起来。
+
 ## 项目结构
 
 ```
@@ -261,6 +320,8 @@ decompress/
 │   │   └── charset.go       字符编码回退
 │   ├── cli/                 命令行接口
 │   └── testutil/            测试辅助（仅被 _test.go 引用）
+├── build/winres/            Windows 版本资源模板
+│   └── versioninfo.json     产品名/公司名/版本号等元数据
 └── Makefile
 ```
 
@@ -272,6 +333,7 @@ decompress/
 - 布局决策的纯函数 → `format/layout_test.go`
 - 布局与预扫描契约 → `format/smart_output_test.go`
 - 各格式的解压正确性 → `format/format_test.go`
+- Windows 版本资源的生成与挂载 → `format/winres_test.go`
 - 纯函数与通用能力 → `core/core_test.go`、`util/util_test.go`
 
 需要装配真实格式实现的测试使用**外部测试包**（`package core_test` /
@@ -349,6 +411,7 @@ func init() { Register(Zip{}) }
 | Windows 路径硬编码 | `replaceAll("/", "\\\\")` 在非 Windows 必崩 | 全平台统一用 `filepath` |
 | tar 魔数过宽 | 512 字节内全窗口扫 `ustar` | 按 POSIX 规范定位偏移 257 |
 | 目录名残留后缀 | `log.tar.gz` 解出 `log.tar/`，多一层目录 | 逐层剥离扩展名，`log.tar.gz` → `log/` |
+| Windows 产物被报毒 | 无版本资源，易被启发式判定为可疑程序 | 补齐版本资源（产品名/公司名/版本号），并提供误报排查指引 |
 | 无内容列举 | 只能解压，不能查看归档内容 | `--list` 支持 ZIP/TAR/7Z/RAR |
 | 无 JSON 输出 | 仅文本 | `--json` 便于集成 |
 
@@ -361,8 +424,12 @@ func init() { Register(Zip{}) }
 | `github.com/bodgit/sevenzip` | 7-Zip | MIT |
 | `github.com/nwaples/rardecode/v2` | RAR 2.0/3.0/5.0 | Unlicense |
 | `golang.org/x/text` | GBK 文件名解码 | BSD-3 |
+| `github.com/josephspurrier/goversioninfo` | 仅构建期：生成 Windows 版本资源 | MIT |
 
 全部为纯 Go 实现，交叉编译无需 CGO 工具链。
+
+`goversioninfo` 是**构建期工具**，通过 `go.mod` 的 `tool` 指令锁定版本，
+不链接进任何发布产物——运行时依赖只有上表前五行。
 
 ## 测试
 

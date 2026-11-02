@@ -1,2 +1,6 @@
 /dist
 /bin
+
+# Windows 版本资源：由 `make winres` 生成，属于构建期产物。
+# 文件名带 _windows_<arch> 后缀，go 命令只会把它们链进对应平台的构建。
+cmd/decompress/resource_windows_*.syso

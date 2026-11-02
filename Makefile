@@ -5,6 +5,7 @@
 #   make test           运行全部测试
 #   make check          格式化检查 + vet + 测试
 #   make release        交叉编译各平台二进制到 dist/
+#   make winres         生成 Windows 版本资源（.syso）
 #   make clean          清理产物
 #
 # 版本号默认取最近的 git tag（如 v1.0.0），可用 VERSION 覆盖：
@@ -24,6 +25,15 @@ VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 # 注入二进制的版本变量。必须与 cli 包的实际导入路径一致，
 # 否则 ldflags 会静默失效，--version 永远显示默认值。
 LDFLAGS := -s -w -X github.com/liux/decompress/internal/cli.Version=$(VERSION)
+
+# Windows 版本资源（PE 的 .rsrc 段）。
+#
+# 生成的 .syso 会挂到主包上，文件名带 _windows_<arch> 后缀，
+# 因此只有对应的 Windows 平台构建才会把它链进去，
+# 其它平台自动忽略。
+WINRES_DIR    := build/winres
+WINRES_OUT    := cmd/decompress
+WINRES_TEMPLATE := $(WINRES_DIR)/versioninfo.json
 
 # 交叉编译目标平台
 PLATFORMS := \
@@ -73,7 +83,10 @@ fmt-check:
 check: fmt-check vet test
 
 ## release 交叉编译各平台二进制
-release:
+#
+# Windows 平台会先挂上版本资源（.syso），让产物在文件属性里带上
+# 产品名、公司名与版本号，同时降低被杀毒软件按"来源不明的程序"误判的概率。
+release: winres
 	@mkdir -p $(DIST_DIR)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; arch=$${platform#*/}; \
@@ -85,6 +98,36 @@ release:
 	done
 	@echo "全部平台编译完成（版本 $(VERSION)），产物在 $(DIST_DIR)/"
 
+## winres 生成 Windows 版本资源
+#
+# 产物是若干个 resource_windows_<arch>.syso，放在主包目录下。
+# 文件名带 _windows_<arch> 后缀，go 命令只会把它们链进对应平台的构建，
+# 因此 Linux / macOS 的产物不受影响。
+#
+# 版本号从 VERSION 解析：形如 v2026.10.1 的语义化版本会拆成
+# 主/次/修订号；无法解析时（如 dev 或纯 commit hash）统一用 0.0.0。
+winres:
+	@mkdir -p $(WINRES_OUT)
+	@v=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	num() { case "$$1" in ''|*[!0-9]*) echo 0 ;; *) echo "$$1" ;; esac; }; \
+	major=$$(num "$$(echo "$$v" | cut -d. -f1 | sed 's/[^0-9].*//')"); \
+	minor=$$(num "$$(echo "$$v" | cut -d. -f2 | sed 's/[^0-9].*//')"); \
+	patch=$$(num "$$(echo "$$v" | cut -d. -f3 | sed 's/[^0-9].*//')"); \
+	fv="$$major.$$minor.$$patch.0"; \
+	echo "生成 Windows 版本资源（版本 $$fv）"; \
+	( cd $(WINRES_OUT) && \
+	go tool goversioninfo -platform-specific \
+		-ver-major $$major -ver-minor $$minor -ver-patch $$patch -ver-build 0 \
+		-product-ver-major $$major -product-ver-minor $$minor \
+		-product-ver-patch $$patch -product-ver-build 0 \
+		-file-version "$$fv" -product-version "$$fv" \
+		"$(CURDIR)/$(WINRES_TEMPLATE)" ) || exit 1; \
+	echo "已生成："; ls $(WINRES_OUT)/*.syso
+
+## winres-clean 清理 Windows 版本资源
+winres-clean:
+	@rm -f $(WINRES_OUT)/resource_windows_*.syso
+
 ## install 安装到 GOPATH/bin
 install:
 	go install $(CMD)
@@ -94,6 +137,6 @@ demo:
 	go run $(CMD) -o ./out .
 
 ## clean 清理构建产物
-clean:
+clean: winres-clean
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 	go clean

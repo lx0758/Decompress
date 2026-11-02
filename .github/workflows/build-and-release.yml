@@ -23,6 +23,11 @@ jobs:
         run: |
           sudo apt install -y make
 
+      # go.mod 用 tool 指令锁定了 Windows 版本资源的生成器
+      # （github.com/josephspurrier/goversioninfo），构建前先把它下载到模块缓存。
+      - name: Download Go modules
+        run: go mod download
+
       - name: Build
         run: |
           make release
